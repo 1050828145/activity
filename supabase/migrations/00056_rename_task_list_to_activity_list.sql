@@ -1,0 +1,1 @@
+ALTER TABLE promotion_tasks RENAME COLUMN task_list TO activity_list;

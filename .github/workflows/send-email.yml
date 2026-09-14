@@ -1,0 +1,31 @@
+name: 定时发送邮件通知
+
+on:
+  schedule:
+    # 每分钟执行一次（UTC 时间）
+    # 注意：GitHub Actions 的最小间隔是 5 分钟
+    # 如果需要每分钟执行，请使用 cron-job.org 等服务
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  send-emails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 调用邮件发送 Edge Function
+        run: |
+          response=$(curl -s -X POST \
+            "https://backend.appmiaoda.com/projects/supabase275158120102146048/functions/v1/send-scheduled-email" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "响应结果："
+          echo "$response"
+          
+          # 检查是否成功
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ 调用成功！"
+          else
+            echo "❌ 调用失败"
+            exit 1
+          fi
