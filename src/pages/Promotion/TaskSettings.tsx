@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Plus, Pencil, Trash2, Megaphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -43,13 +44,33 @@ import { useAuthCheck } from '@/hooks/use-auth-check';
 
 export default function PromotionTaskSettings() {
   const { checkAuth } = useAuthCheck();
+  const location = useLocation();
   const [tasks, setTasks] = useState<PromotionTask[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<PromotionTask | undefined>();
+  const [initialData, setInitialData] = useState<
+    (Partial<PromotionTaskFormData> & { activity_names?: string }) | undefined
+  >();
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
+
+  // 监听来自 AI 推荐任务跳转的路由 state，自动打开新增任务弹窗并预填参数
+  useEffect(() => {
+    const state = location.state as {
+      openNewTask?: boolean;
+      prefillTask?: Partial<PromotionTaskFormData> & { activity_names?: string };
+    } | null;
+
+    if (state?.openNewTask) {
+      setEditingTask(undefined);
+      setInitialData(state.prefillTask);
+      setDialogOpen(true);
+      // 清除 state，避免刷新页面重复弹出
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state]);
 
   useEffect(() => {
     loadTasks();
@@ -91,6 +112,7 @@ export default function PromotionTaskSettings() {
   const handleAdd = () => {
     if (!checkAuth('创建任务')) return;
     setEditingTask(undefined);
+    setInitialData(undefined);
     setDialogOpen(true);
   };
 
@@ -268,12 +290,22 @@ export default function PromotionTaskSettings() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editingTask ? '编辑任务' : '新增任务'}</DialogTitle>
+            <DialogTitle>
+              {editingTask
+                ? '编辑任务'
+                : initialData
+                ? '新增任务（AI推荐参数已预填）'
+                : '新增任务'}
+            </DialogTitle>
           </DialogHeader>
           <PromotionTaskForm
             task={editingTask}
+            initialData={initialData}
             onSubmit={handleSubmit}
-            onCancel={() => setDialogOpen(false)}
+            onCancel={() => {
+              setDialogOpen(false);
+              setInitialData(undefined);
+            }}
           />
         </DialogContent>
       </Dialog>

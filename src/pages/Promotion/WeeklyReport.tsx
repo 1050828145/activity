@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ScatterChart,
   Scatter,
@@ -11,13 +12,27 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
-import { ChevronLeft, ChevronRight, FileDown, Loader2, Sparkles, Square } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileDown,
+  Loader2,
+  Sparkles,
+  Square,
+  Send,
+  RotateCcw,
+  Bot,
+  User as UserIcon,
+} from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import SimpleMarkdown from '@/components/common/SimpleMarkdown';
+import SimpleMarkdown, {
+  type RecommendedTaskData,
+} from '@/components/common/SimpleMarkdown';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import {
@@ -88,15 +103,24 @@ interface DayAgg {
   entries: PromoEntry[];
 }
 
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export default function PromotionWeeklyReport() {
+  const navigate = useNavigate();
   const [activities, setActivities] = useState<Activity[]>([]);
   const [weekStart, setWeekStart] = useState<Date>(() => getMonday(new Date()));
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
-  const [aiContent, setAiContent] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputMessage, setInputMessage] = useState('');
   const [aiStreaming, setAiStreaming] = useState(false);
   const aiAbortRef = useRef<AbortController | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const tasksRef = useRef<PromotionTask[]>([]);
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -309,19 +333,20 @@ export default function PromotionWeeklyReport() {
     凌晨: 'hsl(var(--chart-4))',
   };
 
-  // 构建 AI 分析提示词（汇总本周数据，含任务/活动维度）
+  // 构建 AI 分析提示词（汇总本周数据，含任务/活动维度与具体推广时间）
   const buildPrompt = useCallback(() => {
     const lines = aggregations.map((day) => {
+      const monthDay = `${day.date.getMonth() + 1}月${day.date.getDate()}日`;
       if (day.entries.length === 0) {
-        return `${day.weekdayLabel}：无推广记录`;
+        return `${day.weekdayLabel}（${monthDay}）：无推广记录`;
       }
       const entryTexts = day.entries.map((e) => {
         const acts = e.activities.length
           ? e.activities.map((id) => activityName(id)).join('、')
           : '未指定活动';
-        return `  ${e.time}（${periodLabel[e.period]}）任务「${e.taskName}」：推广「${acts}」${e.channel ? `，渠道「${e.channel}」` : ''}，转化 ${e.conversions} 人`;
+        return `  - 【实际推广时间：${monthDay} ${e.time}（${periodLabel[e.period]}）】实际推广的任务「${e.taskName}」：推广活动「${acts}」${e.channel ? `，渠道「${e.channel}」` : ''}，转化 ${e.conversions} 人`;
       });
-      return `${day.weekdayLabel}（推广 ${day.entries.length} 次，转化 ${day.total} 人）：\n${entryTexts.join('\n')}`;
+      return `${day.weekdayLabel}（${monthDay}，共推广 ${day.entries.length} 次，累计转化 ${day.total} 人）：\n${entryTexts.join('\n')}`;
     });
 
     const totalByPeriod = TIME_PERIODS.map((p) => {
@@ -352,33 +377,49 @@ export default function PromotionWeeklyReport() {
 
     const taskLines = Array.from(taskMap.entries())
       .sort((a, b) => b[1].conv - a[1].conv)
-      .map(([name, v]) => `  - ${name}：推广 ${v.count} 次，转化 ${v.conv} 人`)
+      .map(([name, v]) => `  - 任务「${name}」：累计推广 ${v.count} 次，转化 ${v.conv} 人`)
       .join('\n');
     const actLines = Array.from(actMap.entries())
       .sort((a, b) => b[1].conv - a[1].conv)
-      .map(([name, v]) => `  - ${name}：推广 ${v.count} 次，转化 ${Math.round(v.conv)} 人`)
+      .map(([name, v]) => `  - 活动「${name}」：推广 ${v.count} 次，均摊转化约 ${Math.round(v.conv)} 人`)
       .join('\n');
 
-    return `你是一位专业的活动推广运营分析师。以下是某活动推广团队本周（${weekLabel}）的推广数据，请基于这些具体记录进行分析并给出推广建议。
+    return `你是一位专业的活动推广运营专家。以下是团队本周（${weekLabel}）真实的推广任务执行与转化记录，请基于这些具体数据进行深度复盘与分析，并给出下周可落地的推广建议。
 
-本周总览：共推广 ${promoCount} 次，总转化 ${weekTotal} 人，平均每次转化 ${avgPerPromo} 人，涉及 ${distinctTasks} 个推广任务、${distinctActivityCount} 个活动。
-各时间段转化分布：${totalByPeriod}。
+【本周推广总览】：
+- 累计推广次数：${promoCount} 次
+- 累计转化人数：${weekTotal} 人（平均每次转化 ${avgPerPromo} 人）
+- 涉及任务数：${distinctTasks} 个，涉及活动数：${distinctActivityCount} 个
+- 各时间段转化汇总：${totalByPeriod}
 
-按推广任务汇总（推广次数 / 转化人数）：
+【按推广任务汇总（次数 / 转化）】：
 ${taskLines || '  无'}
 
-按推广活动汇总（推广次数 / 转化人数，转化已按活动数均摊）：
+【按推广活动汇总（次数 / 转化）】：
 ${actLines || '  无'}
 
-每日推广明细（含具体推广时间、时段、所属任务、推广活动、渠道、转化人数）：
+【每日每笔实际推广明细（精确到实际推广时间、所属时段、任务名称、推广活动、渠道、转化人数）】：
 ${lines.join('\n')}
 
-请从以下角度分析并给出具体、可执行的建议：
-1. 整体转化趋势与亮点；
-2. 具体到每个推广任务和每个活动的转化效果对比，指出表现最好和最差的任务/活动；
-3. 哪些时间段、哪些渠道的转化效果最好或最差；
-4. 针对下周的推广优化建议（任务优先级、活动选择、时间安排、渠道投放、资源分配等）。
-请用中文回答，条理清晰，适当使用要点列表。`;
+====================
+【核心分析与输出要求】：
+1. 【强调实际推广时间】：在正文分析、讨论或举例说明某个任务时，**必须说明其具体的实际推广时间**，例如“在 9月12日 14:30（下午）实际推广的「每日下午群推」任务中...”，严格突显推广发生的具体时间与时段，切勿脱离时间只提任务名称！
+2. 【任务与活动效果深度对比】：深入对比各个推广任务和推广活动的效果，点名分析表现最优秀和最薄弱的具体任务与活动。
+3. 【时段与渠道效益分析】：梳理不同时间点（上午/下午/晚上/凌晨）及渠道的表现差异。
+4. 【下周推荐任务（必须包含）】：必须设立专门的【下周推荐任务】章节，给出 2-4 条明确的下周推广任务建议。
+为了让系统能在每一条推荐任务后面直接渲染「生成任务」按钮，**在每一条推荐任务的文本介绍后，必须紧跟一个独立的 \`\`\`task 代码块**，JSON 结构如下（务必使用 task 作为代码块语言）：
+\`\`\`task
+{
+  "name": "推荐的任务名称",
+  "promotion_time": "15:00:00",
+  "cycle_type": "长期任务",
+  "activity_names": "关联活动名称（如有时）",
+  "notes": "推荐理由简述"
+}
+\`\`\`
+（注：cycle_type 可选 "长期任务"、"短期任务" 或 "周期任务"；promotion_time 格式为 HH:mm:ss）
+
+请使用结构清晰、条理分明的中文输出，使用粗体和项目符号突出重点。`;
   }, [
     aggregations,
     weekLabel,
@@ -390,41 +431,159 @@ ${lines.join('\n')}
     activityName,
   ]);
 
+  const handleGenerateTask = useCallback(
+    (task: RecommendedTaskData) => {
+      toast.success(`已提取推荐任务参数「${task.name}」，正在前往任务设置...`);
+      navigate('/promotion/task-settings', {
+        state: {
+          openNewTask: true,
+          prefillTask: task,
+        },
+      });
+    },
+    [navigate]
+  );
+
+  // 触发首次分析或重新分析
   const handleAnalyze = async () => {
     if (aiStreaming) {
       aiAbortRef.current?.abort();
+      setAiStreaming(false);
       return;
     }
     if (aggregations.length === 0) {
       toast.error('当前周暂无数据，无法分析');
       return;
     }
-    setAiContent('');
+
+    const prompt = buildPrompt();
+    const userMsg: ChatMessage = {
+      id: `u-${Date.now()}`,
+      role: 'user',
+      content: prompt,
+    };
+    const assistantMsgId = `a-${Date.now() + 1}`;
+    const assistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+    };
+
+    setMessages([userMsg, assistantMsg]);
     setAiStreaming(true);
     aiAbortRef.current = new AbortController();
-    const prompt = buildPrompt();
+
     await sendStreamRequest({
       functionUrl: `${supabaseUrl}/functions/v1/wenxin-text-generation`,
       requestBody: { messages: [{ role: 'user', content: prompt }] },
       supabaseAnonKey,
+      signal: aiAbortRef.current.signal,
       onData: (data) => {
         if (data === '[DONE]') return;
         try {
           const parsed = JSON.parse(data);
           const chunk = parsed.choices?.[0]?.delta?.content ?? '';
-          if (chunk) setAiContent((prev) => prev + chunk);
+          if (chunk) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, content: m.content + chunk } : m
+              )
+            );
+          }
         } catch {
           // 跳过无法解析的帧
         }
       },
-      onComplete: () => setAiStreaming(false),
-      onError: (error) => {
-        console.error('AI 分析失败:', error);
+      onComplete: () => {
         setAiStreaming(false);
-        toast.error('AI 分析失败，请稍后重试');
+        setTimeout(() => {
+          chatScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
       },
-      signal: aiAbortRef.current.signal,
+      onError: (err) => {
+        setAiStreaming(false);
+        console.error('AI分析失败:', err);
+        toast.error(`AI 分析失败: ${err.message || '网络或接口异常'}`);
+      },
     });
+  };
+
+  // 支持上下文追问多轮对话
+  const handleSendMessage = async (textToSend?: string) => {
+    const text = (textToSend || inputMessage).trim();
+    if (!text) return;
+    if (aiStreaming) {
+      toast.info('AI 正在回复中，请稍候或点击停止');
+      return;
+    }
+
+    const userMsg: ChatMessage = {
+      id: `u-${Date.now()}`,
+      role: 'user',
+      content: text,
+    };
+    const assistantMsgId = `a-${Date.now() + 1}`;
+    const assistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+    };
+
+    const nextMessages = [...messages, userMsg, assistantMsg];
+    setMessages(nextMessages);
+    setInputMessage('');
+    setAiStreaming(true);
+    aiAbortRef.current = new AbortController();
+
+    // 组织对话上下文历史发给大模型
+    const apiMessages = nextMessages.slice(0, -1).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    await sendStreamRequest({
+      functionUrl: `${supabaseUrl}/functions/v1/wenxin-text-generation`,
+      requestBody: { messages: apiMessages },
+      supabaseAnonKey,
+      signal: aiAbortRef.current.signal,
+      onData: (data) => {
+        if (data === '[DONE]') return;
+        try {
+          const parsed = JSON.parse(data);
+          const chunk = parsed.choices?.[0]?.delta?.content ?? '';
+          if (chunk) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, content: m.content + chunk } : m
+              )
+            );
+          }
+        } catch {
+          // 跳过帧
+        }
+      },
+      onComplete: () => {
+        setAiStreaming(false);
+        setTimeout(() => {
+          chatScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+      },
+      onError: (err) => {
+        setAiStreaming(false);
+        console.error('追问回复失败:', err);
+        toast.error(`回复失败: ${err.message || '网络或接口异常'}`);
+      },
+    });
+  };
+
+  const handleClearChat = () => {
+    if (aiStreaming) {
+      aiAbortRef.current?.abort();
+      setAiStreaming(false);
+    }
+    setMessages([]);
+    setInputMessage('');
+    toast.info('已清空对话记录');
   };
 
   return (
@@ -704,43 +863,194 @@ ${lines.join('\n')}
           </CardContent>
         </Card>
 
-        {/* AI 推广建议分析 */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Sparkles className="h-4 w-4" />
-              AI 推广建议分析
-            </CardTitle>
-            <Button
-              size="sm"
-              onClick={handleAnalyze}
-              disabled={loading}
-              variant={aiStreaming ? 'outline' : 'default'}
-            >
+        {/* AI 推广建议分析与上下文对话 */}
+        <Card className="border-primary/20 shadow-sm">
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 space-y-0 pb-3 border-b">
+            <div className="space-y-1">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                AI 推广建议分析与策略对话
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">
+                结合具体任务与实际推广时间深度复盘，生成下周推荐任务并支持多轮对话追问
+              </p>
+            </div>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
               {aiStreaming ? (
-                <>
-                  <Square className="h-4 w-4 mr-1" />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    aiAbortRef.current?.abort();
+                    setAiStreaming(false);
+                  }}
+                  className="text-xs"
+                >
+                  <Square className="h-3.5 w-3.5 mr-1" />
                   停止生成
-                </>
+                </Button>
               ) : (
                 <>
-                  <Sparkles className="h-4 w-4 mr-1" />
-                  {aiContent ? '重新分析' : 'AI 分析推广建议'}
+                  {messages.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleClearChat}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                      清空对话
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={handleAnalyze}
+                    disabled={loading}
+                    className="text-xs"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 mr-1" />
+                    {messages.length > 0 ? '重新分析' : 'AI 分析推广建议'}
+                  </Button>
                 </>
               )}
-            </Button>
+            </div>
           </CardHeader>
-          <CardContent>
-            {!aiContent && !aiStreaming ? (
-              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                <Sparkles className="h-8 w-8 mb-2 opacity-30" />
-                <p className="text-sm">点击上方按钮，基于本周数据由大模型生成推广建议</p>
+          <CardContent className="pt-4 space-y-4">
+            {messages.length === 0 && !aiStreaming ? (
+              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground text-center">
+                <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-3">
+                  <Sparkles className="h-6 w-6 text-primary" />
+                </div>
+                <h4 className="font-medium text-foreground text-sm mb-1">
+                  基于本周数据智能生成下周推广方案
+                </h4>
+                <p className="text-xs text-muted-foreground max-w-md mb-4">
+                  AI 将根据每个任务的具体推广时间、各活动转化表现进行深度复盘，给出具体的下周推荐任务，并支持一键生成任务。
+                </p>
+                <Button size="sm" onClick={handleAnalyze} disabled={loading}>
+                  <Sparkles className="h-4 w-4 mr-1.5" />
+                  开始生成本周分析与建议
+                </Button>
               </div>
             ) : (
-              <div className="text-sm leading-relaxed">
-                <SimpleMarkdown content={aiContent} />
-                {aiStreaming && (
-                  <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-0.5 align-middle" />
+              <div className="space-y-4">
+                {/* 消息对话列表 */}
+                <div className="space-y-4">
+                  {messages.map((msg, idx) => {
+                    if (msg.role === 'user') {
+                      // 第一条是系统生成的大 prompt，显示为汇总卡片
+                      if (idx === 0) {
+                        return (
+                          <div
+                            key={msg.id}
+                            className="rounded-lg bg-muted/60 p-3 text-xs text-muted-foreground flex items-center justify-between"
+                          >
+                            <span className="flex items-center gap-1.5 font-medium text-foreground">
+                              <Bot className="h-4 w-4 text-primary" />
+                              已汇总本周（{weekLabel}）共 {promoCount} 次推广、{weekTotal} 人转化数据发起智能复盘
+                            </span>
+                            <Badge variant="outline" className="text-[11px]">
+                              初始分析
+                            </Badge>
+                          </div>
+                        );
+                      }
+                      // 后续多轮追问展示为用户气泡
+                      return (
+                        <div key={msg.id} className="flex items-start gap-2.5 justify-end">
+                          <div className="rounded-2xl rounded-tr-sm bg-primary text-primary-foreground px-4 py-2.5 text-sm max-w-[85%] shadow-sm">
+                            <p className="whitespace-pre-wrap">{msg.content}</p>
+                          </div>
+                          <div className="h-7 w-7 rounded-full bg-primary/20 flex items-center justify-center shrink-0 text-primary mt-0.5">
+                            <UserIcon className="h-4 w-4" />
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Assistant 回复
+                    const isLast = idx === messages.length - 1;
+                    return (
+                      <div key={msg.id} className="flex items-start gap-3">
+                        <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-primary mt-0.5">
+                          <Bot className="h-4 w-4" />
+                        </div>
+                        <div className="flex-1 min-w-0 rounded-lg bg-card border p-4 shadow-sm text-sm leading-relaxed">
+                          {!msg.content && aiStreaming ? (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                              AI 正在深入复盘本周任务并生成下周推广建议...
+                            </div>
+                          ) : (
+                            <>
+                              <SimpleMarkdown
+                                content={msg.content}
+                                onGenerateTask={handleGenerateTask}
+                              />
+                              {isLast && aiStreaming && (
+                                <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-0.5 align-middle" />
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div ref={chatScrollRef} />
+
+                {/* 追问输入框与快捷建议 */}
+                {!aiStreaming && messages.length > 0 && (
+                  <div className="pt-2 border-t space-y-2.5">
+                    {/* 快捷追问胶囊 */}
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-muted-foreground flex items-center gap-1 shrink-0">
+                        <Sparkles className="h-3 w-3 text-primary" />
+                        快捷提问：
+                      </span>
+                      {[
+                        '针对本周转化最低的任务，有什么具体调整建议？',
+                        '如果想在下周提升晚上时段转化，该如何规划？',
+                        '下周推荐任务中哪个优先级最高，建议先执行哪个？',
+                      ].map((q) => (
+                        <button
+                          key={q}
+                          type="button"
+                          onClick={() => handleSendMessage(q)}
+                          className="rounded-full bg-muted/80 hover:bg-muted text-muted-foreground hover:text-foreground px-2.5 py-1 text-xs transition-colors text-left"
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* 输入行 */}
+                    <div className="flex items-end gap-2">
+                      <Textarea
+                        value={inputMessage}
+                        onChange={(e) => setInputMessage(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSendMessage();
+                          }
+                        }}
+                        placeholder="输入追问内容，如：羽毛球活动下周哪天推广合适？（Enter 发送，Shift+Enter 换行）"
+                        className="min-h-[60px] max-h-32 text-sm resize-none"
+                        disabled={aiStreaming}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => handleSendMessage()}
+                        disabled={aiStreaming || !inputMessage.trim()}
+                        className="h-10 px-4 shrink-0"
+                      >
+                        <Send className="h-4 w-4 mr-1" />
+                        发送
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

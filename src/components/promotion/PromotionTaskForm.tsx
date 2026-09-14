@@ -19,26 +19,75 @@ import ActivityMultiSelect from './ActivityMultiSelect';
 
 interface PromotionTaskFormProps {
   task?: PromotionTask;
+  initialData?: Partial<PromotionTaskFormData> & { activity_names?: string };
   onSubmit: (data: PromotionTaskFormData) => Promise<void> | void;
   onCancel: () => void;
 }
 
-export default function PromotionTaskForm({ task, onSubmit, onCancel }: PromotionTaskFormProps) {
+export default function PromotionTaskForm({
+  task,
+  initialData,
+  onSubmit,
+  onCancel,
+}: PromotionTaskFormProps) {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(true);
   const [formData, setFormData] = useState<PromotionTaskFormData>({
-    name: task?.name || '',
-    is_common: task?.is_common ?? false,
-    activity_list: task?.activity_list || '',
-    cycle_type: task?.cycle_type || '长期任务',
-    start_date: task?.start_date || '',
-    end_date: task?.end_date || '',
-    cycle_interval: task?.cycle_interval ?? null,
-    promotion_time: task?.promotion_time || '09:00:00',
-    status: task?.status || '启用',
-    notes: task?.notes || '',
+    name: task?.name || initialData?.name || '',
+    is_common: task?.is_common ?? initialData?.is_common ?? false,
+    activity_list: task?.activity_list || initialData?.activity_list || '',
+    cycle_type: task?.cycle_type || initialData?.cycle_type || '长期任务',
+    start_date: task?.start_date || initialData?.start_date || '',
+    end_date: task?.end_date || initialData?.end_date || '',
+    cycle_interval: task?.cycle_interval ?? initialData?.cycle_interval ?? null,
+    promotion_time: task?.promotion_time || initialData?.promotion_time || '09:00:00',
+    status: task?.status || initialData?.status || '启用',
+    notes: task?.notes || initialData?.notes || '',
   });
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (task) {
+      setFormData({
+        name: task.name,
+        is_common: task.is_common,
+        activity_list: task.activity_list,
+        cycle_type: task.cycle_type,
+        start_date: task.start_date || '',
+        end_date: task.end_date || '',
+        cycle_interval: task.cycle_interval ?? null,
+        promotion_time: task.promotion_time,
+        status: task.status,
+        notes: task.notes || '',
+      });
+    } else if (initialData) {
+      setFormData((prev) => ({
+        ...prev,
+        ...initialData,
+      }));
+    }
+  }, [task, initialData]);
+
+  // 当活动列表加载后，如果 initialData 带有活动名称但没有 activity_list，自动匹配关联活动
+  useEffect(() => {
+    if (initialData?.activity_names && activities.length > 0 && !task) {
+      const names = initialData.activity_names
+        .split(/[、,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const matchedIds = activities
+        .filter((a) => names.some((n) => a.name.includes(n) || n.includes(a.name)))
+        .map((a) => a.id);
+      if (matchedIds.length > 0) {
+        setFormData((prev) => {
+          if (!prev.activity_list) {
+            return { ...prev, activity_list: matchedIds.join(',') };
+          }
+          return prev;
+        });
+      }
+    }
+  }, [activities, initialData, task]);
 
   useEffect(() => {
     (async () => {
