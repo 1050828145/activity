@@ -17,11 +17,82 @@ import type { PromotionTask, PromotionTaskFormData, Activity, PromotionCycleType
 import { toast } from 'sonner';
 import ActivityMultiSelect from './ActivityMultiSelect';
 
+export type InitialTaskData = Partial<PromotionTaskFormData> & {
+  activity_names?: string;
+  date?: string;
+  time?: string;
+  startDate?: string;
+  endDate?: string;
+  promotionTime?: string;
+};
+
 interface PromotionTaskFormProps {
   task?: PromotionTask;
-  initialData?: Partial<PromotionTaskFormData> & { activity_names?: string };
+  initialData?: InitialTaskData;
   onSubmit: (data: PromotionTaskFormData) => Promise<void> | void;
   onCancel: () => void;
+}
+
+function normalizeTaskData(
+  task?: PromotionTask,
+  initialData?: InitialTaskData
+): PromotionTaskFormData {
+  if (task) {
+    return {
+      name: task.name,
+      is_common: task.is_common,
+      activity_list: task.activity_list,
+      cycle_type: task.cycle_type,
+      start_date: task.start_date || '',
+      end_date: task.end_date || '',
+      cycle_interval: task.cycle_interval ?? null,
+      promotion_time: task.promotion_time,
+      status: task.status,
+      notes: task.notes || '',
+    };
+  }
+
+  const rawStart =
+    initialData?.start_date ||
+    initialData?.date ||
+    initialData?.startDate ||
+    '';
+  const rawEnd =
+    initialData?.end_date ||
+    initialData?.endDate ||
+    initialData?.date ||
+    rawStart;
+
+  // 如果推荐参数中指定了具体开始或结束日期，自适应为“短期任务”，以便表单渲染出日期输入框并填入值
+  let cycleType: PromotionCycleType = initialData?.cycle_type || '长期任务';
+  if ((rawStart || rawEnd) && cycleType === '长期任务') {
+    cycleType = '短期任务';
+  }
+
+  // 时间格式补齐 HH:mm:ss
+  let timeStr =
+    initialData?.promotion_time ||
+    initialData?.time ||
+    initialData?.promotionTime ||
+    '09:00:00';
+  if (/^\d{1,2}:\d{2}$/.test(timeStr)) {
+    timeStr = `${timeStr.padStart(5, '0')}:00`;
+  } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(timeStr)) {
+    timeStr = timeStr.padStart(8, '0');
+  }
+
+  return {
+    name: initialData?.name || '',
+    is_common: initialData?.is_common ?? false,
+    activity_list: initialData?.activity_list || '',
+    cycle_type: cycleType,
+    start_date: rawStart,
+    end_date: rawEnd,
+    cycle_interval: initialData?.cycle_interval ?? null,
+    promotion_time: timeStr,
+    status: initialData?.status || '启用',
+    notes: initialData?.notes || '',
+  };
 }
 
 export default function PromotionTaskForm({
@@ -32,40 +103,13 @@ export default function PromotionTaskForm({
 }: PromotionTaskFormProps) {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(true);
-  const [formData, setFormData] = useState<PromotionTaskFormData>({
-    name: task?.name || initialData?.name || '',
-    is_common: task?.is_common ?? initialData?.is_common ?? false,
-    activity_list: task?.activity_list || initialData?.activity_list || '',
-    cycle_type: task?.cycle_type || initialData?.cycle_type || '长期任务',
-    start_date: task?.start_date || initialData?.start_date || '',
-    end_date: task?.end_date || initialData?.end_date || '',
-    cycle_interval: task?.cycle_interval ?? initialData?.cycle_interval ?? null,
-    promotion_time: task?.promotion_time || initialData?.promotion_time || '09:00:00',
-    status: task?.status || initialData?.status || '启用',
-    notes: task?.notes || initialData?.notes || '',
-  });
+  const [formData, setFormData] = useState<PromotionTaskFormData>(() =>
+    normalizeTaskData(task, initialData)
+  );
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (task) {
-      setFormData({
-        name: task.name,
-        is_common: task.is_common,
-        activity_list: task.activity_list,
-        cycle_type: task.cycle_type,
-        start_date: task.start_date || '',
-        end_date: task.end_date || '',
-        cycle_interval: task.cycle_interval ?? null,
-        promotion_time: task.promotion_time,
-        status: task.status,
-        notes: task.notes || '',
-      });
-    } else if (initialData) {
-      setFormData((prev) => ({
-        ...prev,
-        ...initialData,
-      }));
-    }
+    setFormData(normalizeTaskData(task, initialData));
   }, [task, initialData]);
 
   // 当活动列表加载后，如果 initialData 带有活动名称但没有 activity_list，自动匹配关联活动

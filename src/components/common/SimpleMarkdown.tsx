@@ -6,11 +6,15 @@ import { Sparkles, Calendar, Clock, Tag } from 'lucide-react';
 export interface RecommendedTaskData {
   name: string;
   promotion_time?: string;
+  time?: string;
   cycle_type?: '长期任务' | '短期任务' | '周期任务';
   activity_names?: string;
   activity_list?: string;
   start_date?: string;
   end_date?: string;
+  date?: string;
+  startDate?: string;
+  endDate?: string;
   cycle_interval?: number | null;
   notes?: string;
 }

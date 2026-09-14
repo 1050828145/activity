@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   ScatterChart,
   Scatter,
@@ -29,6 +28,12 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import SimpleMarkdown, {
   type RecommendedTaskData,
@@ -40,13 +45,16 @@ import {
   getPromotionTaskRecordsByDateRange,
   getPromotionTaskDetails,
   getActivities,
+  createPromotionTask,
 } from '@/db/api';
 import type {
   PromotionTask,
   PromotionTaskRecord,
   PromotionTaskDetail,
   Activity,
+  PromotionTaskFormData,
 } from '@/types';
+import PromotionTaskForm from '@/components/promotion/PromotionTaskForm';
 import { formatDateStr } from '@/lib/promotion';
 import { sendStreamRequest } from '@/lib/sse';
 import { format } from 'date-fns';
@@ -110,7 +118,6 @@ interface ChatMessage {
 }
 
 export default function PromotionWeeklyReport() {
-  const navigate = useNavigate();
   const [activities, setActivities] = useState<Activity[]>([]);
   const [weekStart, setWeekStart] = useState<Date>(() => getMonday(new Date()));
   const [loading, setLoading] = useState(true);
@@ -118,6 +125,8 @@ export default function PromotionWeeklyReport() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [aiStreaming, setAiStreaming] = useState(false);
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [prefillTask, setPrefillTask] = useState<RecommendedTaskData | undefined>();
   const aiAbortRef = useRef<AbortController | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -384,6 +393,12 @@ export default function PromotionWeeklyReport() {
       .map(([name, v]) => `  - 活动「${name}」：推广 ${v.count} 次，均摊转化约 ${Math.round(v.conv)} 人`)
       .join('\n');
 
+    // 计算下周对应的真实起止日期范围
+    const nextWeekMonday = addDays(weekStart, 7);
+    const nextWeekSunday = addDays(weekStart, 13);
+    const nextWeekStartStr = formatDateStr(nextWeekMonday);
+    const nextWeekEndStr = formatDateStr(nextWeekSunday);
+
     return `你是一位专业的活动推广运营专家。以下是团队本周（${weekLabel}）真实的推广任务执行与转化记录，请基于这些具体数据进行深度复盘与分析，并给出下周可落地的推广建议。
 
 【本周推广总览】：
@@ -407,21 +422,25 @@ ${lines.join('\n')}
 2. 【任务与活动效果深度对比】：深入对比各个推广任务和推广活动的效果，点名分析表现最优秀和最薄弱的具体任务与活动。
 3. 【时段与渠道效益分析】：梳理不同时间点（上午/下午/晚上/凌晨）及渠道的表现差异。
 4. 【下周推荐任务（必须包含）】：必须设立专门的【下周推荐任务】章节，给出 2-4 条明确的下周推广任务建议。
-为了让系统能在每一条推荐任务后面直接渲染「生成任务」按钮，**在每一条推荐任务的文本介绍后，必须紧跟一个独立的 \`\`\`task 代码块**，JSON 结构如下（务必使用 task 作为代码块语言）：
+下周真实日期范围为：${nextWeekStartStr} 至 ${nextWeekEndStr}。
+为了让系统能在每一条推荐任务后面直接渲染「生成任务」按钮，并能自动填充任务名称、日期、时间与关联活动，**在每一条推荐任务的文本介绍后，必须紧跟一个独立的 \`\`\`task 代码块**，JSON 结构中务必包含完整的日期时间参数（start_date, end_date, promotion_time）：
 \`\`\`task
 {
   "name": "推荐的任务名称",
+  "cycle_type": "短期任务",
+  "start_date": "${nextWeekStartStr}",
+  "end_date": "${nextWeekEndStr}",
   "promotion_time": "15:00:00",
-  "cycle_type": "长期任务",
   "activity_names": "关联活动名称（如有时）",
   "notes": "推荐理由简述"
 }
 \`\`\`
-（注：cycle_type 可选 "长期任务"、"短期任务" 或 "周期任务"；promotion_time 格式为 HH:mm:ss）
+（注：如果是特定单日或短期执行的任务，cycle_type 设为 "短期任务"，start_date 与 end_date 填写下周的具体日期 YYYY-MM-DD；如果是每日长期执行的任务，cycle_type 设为 "长期任务"；promotion_time 务必设定为具体的实际建议推广时间，格式必须为 HH:mm:ss）
 
 请使用结构清晰、条理分明的中文输出，使用粗体和项目符号突出重点。`;
   }, [
     aggregations,
+    weekStart,
     weekLabel,
     weekTotal,
     promoCount,
@@ -431,18 +450,27 @@ ${lines.join('\n')}
     activityName,
   ]);
 
-  const handleGenerateTask = useCallback(
-    (task: RecommendedTaskData) => {
-      toast.success(`已提取推荐任务参数「${task.name}」，正在前往任务设置...`);
-      navigate('/promotion/task-settings', {
-        state: {
-          openNewTask: true,
-          prefillTask: task,
-        },
-      });
-    },
-    [navigate]
-  );
+  // 点击生成任务：在当前周报页面直接弹出新增任务弹窗，不再跳转离开页面
+  const handleGenerateTask = useCallback((task: RecommendedTaskData) => {
+    setPrefillTask(task);
+    setTaskDialogOpen(true);
+  }, []);
+
+  // 在周报页面直接提交保存任务
+  const handleCreateTaskFromReport = async (formData: PromotionTaskFormData) => {
+    try {
+      await createPromotionTask(formData);
+      toast.success(`推广任务「${formData.name}」创建成功！`);
+      setTaskDialogOpen(false);
+      setPrefillTask(undefined);
+      // 刷新本页面的任务引用缓存
+      const updatedTasks = await getPromotionTasks();
+      tasksRef.current = updatedTasks;
+    } catch (error) {
+      console.error('创建任务失败:', error);
+      toast.error('创建任务失败，请检查填写内容');
+    }
+  };
 
   // 触发首次分析或重新分析
   const handleAnalyze = async () => {
@@ -1056,6 +1084,33 @@ ${lines.join('\n')}
             )}
           </CardContent>
         </Card>
+
+        {/* 直接在周报页面弹出新增推荐任务弹窗，无需离开周报页面 */}
+        <Dialog
+          open={taskDialogOpen}
+          onOpenChange={(open) => {
+            setTaskDialogOpen(open);
+            if (!open) setPrefillTask(undefined);
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {prefillTask ? `新增推荐任务：${prefillTask.name || ''}` : '新增任务'}
+              </DialogTitle>
+            </DialogHeader>
+            {taskDialogOpen && (
+              <PromotionTaskForm
+                initialData={prefillTask}
+                onSubmit={handleCreateTaskFromReport}
+                onCancel={() => {
+                  setTaskDialogOpen(false);
+                  setPrefillTask(undefined);
+                }}
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );
